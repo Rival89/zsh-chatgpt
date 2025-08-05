@@ -1,0 +1,3 @@
+#compdef chatgpt
+
+_arguments '1:command:(new switch list clear exit --image --file --cmd --pipe)'
