@@ -1,56 +1,247 @@
 #!/usr/bin/env zsh
 
-chatgpt() {
-  emulate -L zsh
-  setopt extended_glob
-  local user_input session_file tmpfile shell_context
-  session_file="${CHAT_SESSION_FILE:-$HOME/.chatgpt_session.json}"
-  tmpfile="$(mktemp)"
+# Main CLI for zsh-chatgpt
 
-  # Ensure session file exists
-  [[ ! -f "$session_file" ]] && echo '[]' > "$session_file"
+set -euo pipefail
 
-  # Function to get shell context
-  get_shell_context() {
-    history | tail -n ${CHAT_SHELL_HISTORY_LINES:-5} | sed 's/^/ - /'
-  }
+script_dir=${0:A:h}
+source "$script_dir/../config/config.zsh"
+source "$script_dir/../utils/ui.zsh"
+require_cmd curl jq || exit 1
+warn_optional_cmds
 
-  while true; do
-    print -n "%F{cyan}You:%f "
-    read -r user_input
-    [[ "$user_input" == "exit" || "$user_input" == "quit" ]] && break
+usage() {
+  cat <<'EOF'
+Usage: chatgpt [options] [prompt]
 
-    shell_context=$(get_shell_context)
+Options:
+  -m, --model <name>      Select model (default: $OPENAI_MODEL)
+  --session <name>        Use existing session
+  --new-session <name>    Create and switch to a new session
+  --list                  List available sessions
+  --clear                 Clear current session conversation
+  --image                 Generate image instead of chat completion
+  --file <path>           Include file contents as context
+  --cmd <command>         Include command output as context
+  --pipe                  Read additional context from STDIN
+  --markdown              Render final response with glow or bat
+  -h, --help              Show this help
 
-    # Inject context into user input
-    full_prompt="Context:\n$shell_context\n\nMessage:\n$user_input"
+Run without a prompt to enter interactive chat mode.
+EOF
+}
 
-    # Append user prompt
-    jq --arg content "$full_prompt" \
-       '. += [{"role":"user","content":$content}]' \
-       "$session_file" > "$tmpfile" && mv "$tmpfile" "$session_file"
+# -------------------------------------------------------------
 
-    print -n "%F{green}ChatGPT:%f "
-    curl -sS -N \
-      -H "Authorization: Bearer $OPENAI_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d @- "$OPENAI_API_URL" <<EOF | while read -r line; do
+model=$OPENAI_MODEL
+session=$CHATGPT_DEFAULT_SESSION
+new_session=
+clear=false
+list=false
+image=false
+markdown=false
+file=""
+cmd=""
+from_pipe=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -m|--model) model="$2"; shift;;
+    --session) session="$2"; shift;;
+    --new-session) new_session="$2"; shift;;
+    --clear) clear=true;;
+    --list) list=true;;
+    --image) image=true;;
+    --file) file="$2"; shift;;
+    --cmd) cmd="$2"; shift;;
+    --pipe) from_pipe=true;;
+    --markdown) markdown=true;;
+    -h|--help) usage; exit 0;;
+    --) shift; break;;
+    *) break;;
+  esac
+  shift
+done
+
+prompt="$*"
+
+ensure_dirs
+
+# Manage sessions ------------------------------------------------
+
+session_file="$CHATGPT_SESSION_DIR/${session}.json"
+
+if [[ -n $new_session ]]; then
+  session="$new_session"
+  session_file="$CHATGPT_SESSION_DIR/${session}.json"
+  print '[]' > "$session_file"
+fi
+
+if $list; then
+  for f in "$CHATGPT_SESSION_DIR"/*.json(N); do
+    print ${f:t:r}
+  done
+  exit 0
+fi
+
+if $clear; then
+  : > "$session_file"
+  print "Session '$session' cleared."
+  exit 0
+fi
+
+[[ -f "$session_file" ]] || print '[]' > "$session_file"
+
+# Helper to build context ---------------------------------------
+
+build_prompt() {
+  local msg="$1" extra=""
+  extra+=$'## Shell\n'"$(get_shell_context)"$'\n\n'
+  if [[ -n $file ]]; then
+    if [[ -f $file ]]; then
+      extra+=$"## File: $file\n$(<"$file")\n\n"
+    else
+      printf 'File not found: %s\n' "$file" >&2
+    fi
+  fi
+  if [[ -n $cmd ]]; then
+    local cmd_out
+    cmd_out=$(eval "$cmd" 2>&1) || printf 'Command failed: %s\n' "$cmd" >&2
+    extra+=$"## Command: $cmd\n$cmd_out\n\n"
+  fi
+  if $from_pipe; then
+    local piped
+    piped=$(cat)
+    extra+=$"## STDIN\n$piped\n\n"
+  fi
+  printf '%s\n%s' "$extra" "$msg"
+}
+
+# Chat completion ------------------------------------------------
+
+chat_request() {
+  local user_msg="$1" buffer="" line content attempt=1 success=0 tmp_backup
+  tmp_backup=$(mktemp)
+  cp "$session_file" "$tmp_backup"
+  append_message "user" "$user_msg" "$session_file"
+
+  while (( attempt <= CHATGPT_RETRY_MAX )); do
+    if $markdown; then
+      buffer=$(curl -sS --fail \
+        -H "Authorization: Bearer $OPENAI_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d @- "$OPENAI_API_URL" <<EOF | jq -r '.choices[0].message.content'
 {
-  "model": "$OPENAI_MODEL",
+  "model": "$model",
+  "messages": $(cat "$session_file")
+}
+EOF
+      )
+      if (( $? == 0 )); then
+        render_markdown "$buffer"
+        success=1
+      else
+        success=0
+      fi
+    else
+      buffer=""
+      curl -sS --fail -N \
+        -H "Authorization: Bearer $OPENAI_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d @- "$OPENAI_API_URL" <<EOF | while IFS= read -r line; do
+{
+  "model": "$model",
   "stream": true,
   "messages": $(cat "$session_file")
 }
 EOF
-      [[ "$line" == "data: [DONE]" ]] && break
-      local content=$(echo "$line" | sed 's/^data: //' | jq -r '.choices[0].delta.content // empty')
-      print -n -- "$content"
-    done
-    echo
+        [[ "$line" == "data: [DONE]" ]] && break
+        content=$(echo "$line" | sed 's/^data: //' | jq -r '.choices[0].delta.content // empty')
+        [[ -n $content ]] || continue
+        print -n -- "$content"
+        buffer+="$content"
+      done
+      (( ${pipestatus[1]} == 0 )) && success=1 || success=0
+      [[ $success -eq 1 ]] && echo
+    fi
+    [[ $success -eq 1 ]] && break
+    echo "Retrying... ($attempt/$CHATGPT_RETRY_MAX)" >&2
+    (( attempt++ ))
+    sleep $CHATGPT_RETRY_SLEEP
+  done
 
-    # Extract last assistant message from session and persist
-    last_reply=$(jq -r '.[-1].content' "$session_file")
-    [[ -n "$last_reply" ]] && jq --arg content "$last_reply" \
-      '. += [{"role":"assistant","content":$content}]' \
-      "$session_file" > "$tmpfile" && mv "$tmpfile" "$session_file"
+  if (( success == 0 )); then
+    mv "$tmp_backup" "$session_file"
+    rm -f "$tmp_backup"
+    echo 'Error contacting OpenAI API' >&2
+    return 1
+  fi
+  rm -f "$tmp_backup"
+
+  append_message "assistant" "$buffer" "$session_file"
+  log_turn "$session" "$user_msg" "$buffer"
+}
+
+# Image generation -----------------------------------------------
+
+image_request() {
+  local prompt="$1" resp attempt=1
+  while (( attempt <= CHATGPT_RETRY_MAX )); do
+    resp=$(curl -sS --fail \
+      -H "Authorization: Bearer $OPENAI_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d @- "$OPENAI_IMAGE_URL" <<EOF
+{
+  "model": "$OPENAI_IMAGE_MODEL",
+  "prompt": "$prompt"
+}
+EOF
+    ) && break
+    echo "Retrying... ($attempt/$CHATGPT_RETRY_MAX)" >&2
+    (( attempt++ ))
+    sleep $CHATGPT_RETRY_SLEEP
+  done
+  [[ -n $resp ]] || { echo 'Error contacting OpenAI API' >&2; return 1; }
+  echo "$resp" | jq -r '.data[0].url'
+}
+
+# Handle single message ------------------------------------------
+
+handle_message() {
+  local input="$1"
+  local built
+  built=$(build_prompt "$input")
+  if $image; then
+    local url
+    url=$(image_request "$built") || return 1
+    print -- "$url"
+  else
+    chat_request "$built" || return 1
+  fi
+}
+
+# Interactive loop ------------------------------------------------
+
+interactive_loop() {
+  local msg
+  while true; do
+    if command -v gum >/dev/null; then
+      msg=$(gum input --prompt="You: ")
+    else
+      printf "%F{cyan}You:%f "
+      read -r msg
+    fi
+    [[ -z $msg ]] && continue
+    [[ $msg == exit || $msg == quit ]] && break
+    handle_message "$msg"
   done
 }
+
+# Entry -----------------------------------------------------------
+
+if [[ -n $prompt || $from_pipe || -n $file || -n $cmd ]]; then
+  handle_message "$prompt"
+else
+  interactive_loop
+fi
+
