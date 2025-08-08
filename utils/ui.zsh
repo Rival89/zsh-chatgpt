@@ -5,6 +5,7 @@ ensure_dirs() {
   mkdir -p "$CHATGPT_SESSION_DIR" "$CHATGPT_LOG_DIR"
 }
 
+
 # Fetch the last few commands from shell history and format them
 get_shell_context() {
   local lines=${CHAT_SHELL_HISTORY_LINES:-20}
