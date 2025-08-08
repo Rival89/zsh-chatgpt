@@ -1,3 +1,25 @@
 #compdef chatgpt
 
-_arguments '1:command:(new switch list clear exit --image --file --cmd --pipe)'
+# Zsh completion for chatgpt CLI
+
+local -a models
+models=(gpt-4o gpt-4.1 o3 o3-mini gpt-5)
+
+_chatgpt_sessions() {
+  local dir=${CHATGPT_SESSION_DIR:-$HOME/.chatgpt_sessions}
+  _files -W "$dir" -g '*.json'
+}
+
+_arguments -C \
+  '(-h --help)'{-h,--help}'[show help]' \
+  '(-m --model)'{-m,--model}'[model]:model:((gpt-4o gpt-4.1 o3 o3-mini gpt-5))' \
+  '--session[use session]:session name:_chatgpt_sessions' \
+  '--new-session[new session]:session name:' \
+  '--list[list sessions]' \
+  '--clear[clear session]' \
+  '--image[generate image]' \
+  '--file[include file]:file:_files' \
+  '--cmd[include command]:command:_command_names' \
+  '--pipe[read from stdin]' \
+  '*:prompt:'
+
