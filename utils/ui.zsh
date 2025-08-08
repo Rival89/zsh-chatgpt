@@ -1,38 +1,64 @@
 # Utility functions for zsh-chatgpt
 
-ensure_session_dir() {
-  # Ensure the directory for the session file exists
-  local dir
-  dir=$(dirname "$CHAT_SESSION_FILE")
-  mkdir -p "$dir"
+# Ensure necessary directories exist
+ensure_dirs() {
+  mkdir -p "$CHATGPT_SESSION_DIR" "$CHATGPT_LOG_DIR"
 }
 
+# Fetch the last few commands from shell history and format them
 get_shell_context() {
-  # Get the last few shell history lines and format as bullet points
-  local lines=${CHAT_SHELL_HISTORY_LINES:-5}
-  history | tail -n "$lines" | sed 's/^/ - /'
+  local lines=${CHAT_SHELL_HISTORY_LINES:-20}
+  fc -ln -$lines 2>/dev/null | sed 's/^/ - /'
 }
 
+# Allow the user to pick an existing session using fzf
 select_session() {
-  # Present available session files and let user pick one via fzf
-  local dir
-  dir=$(dirname "$CHAT_SESSION_FILE")
-  local files
-  files=("$dir"/*.json(N))
-  [[ ${#files[@]} -eq 0 ]] && echo "$CHAT_SESSION_FILE" && return
-  local selected
-  selected=$(printf "%s\n" "${files[@]##*/}" | fzf --prompt="Select session: ")
-  echo "$dir/$selected"
+  ensure_dirs
+  local files=("$CHATGPT_SESSION_DIR"/*.json(N))
+  if (( ${#files[@]} == 0 )); then
+    echo "$CHATGPT_SESSION_DIR/$CHATGPT_DEFAULT_SESSION.json"
+    return
+  fi
+  if command -v fzf >/dev/null; then
+    local selected
+    selected=$(printf "%s\n" "${files[@]##*/}" | fzf --prompt="Session> ")
+    [[ -n $selected ]] && echo "$CHATGPT_SESSION_DIR/$selected" || echo "$CHATGPT_SESSION_DIR/$CHATGPT_DEFAULT_SESSION.json"
+  else
+    printf "%s\n" "${files[@]}"
+  fi
 }
 
-append_to_session() {
-  # Append assistant message to the current session JSON file
-  local content="$1"
-  local file="${CHAT_SESSION_FILE}"
+# Render markdown using glow or bat if available
+render_markdown() {
+  local text="$1"
+  if command -v glow >/dev/null; then
+    printf "%s" "$text" | glow -
+  elif command -v bat >/dev/null; then
+    printf "%s" "$text" | bat -l markdown
+  else
+    printf "%s\n" "$text"
+  fi
+}
+
+# Append a message to the session JSON file
+append_message() {
+  local role="$1" content="$2" file="$3"
   local tmpfile
   tmpfile=$(mktemp)
-  if [[ ! -f "$file" ]]; then
-    echo '[]' > "$file"
-  fi
-  jq --arg content "$content" '. + [{"role":"assistant","content":$content}]' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+  [[ ! -f "$file" ]] && print '[]' > "$file"
+  jq --arg role "$role" --arg content "$content" \
+     '. + [{"role":$role,"content":$content}]' "$file" > "$tmpfile" \
+     && mv "$tmpfile" "$file"
 }
+
+# Log a conversation turn to the log directory
+log_turn() {
+  local session="$1" user="$2" assistant="$3"
+  local logfile="$CHATGPT_LOG_DIR/${session}_$(date +%Y%m%d).md"
+  {
+    printf "### %s\n\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf "**You:** %s\n\n" "$user"
+    printf "**ChatGPT:** %s\n\n" "$assistant"
+  } >> "$logfile"
+}
+
