@@ -1,0 +1,3 @@
+sessions/
+config/api_key
+*.log
