@@ -1,0 +1,4 @@
+sessions/*.json
+!sessions/default.json
+config/api_key
+*.log
