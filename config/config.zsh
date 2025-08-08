@@ -31,13 +31,3 @@ get_api_key
 # Number of previous shell commands to include as context
 : ${CHAT_SHELL_HISTORY_LINES:=20}
 
-# Retry behaviour for API requests
-: ${CHATGPT_RETRY_MAX:=3}
-: ${CHATGPT_RETRY_SLEEP:=2}
-
-# Allow user overrides via ~/.config/zsh-chatgpt/config.zsh
-user_cfg="$HOME/.config/zsh-chatgpt/config.zsh"
-if [[ -f $user_cfg ]]; then
-  source "$user_cfg"
-fi
-

@@ -5,25 +5,6 @@ ensure_dirs() {
   mkdir -p "$CHATGPT_SESSION_DIR" "$CHATGPT_LOG_DIR"
 }
 
-# Check that required commands exist
-require_cmd() {
-  for cmd in "$@"; do
-    if ! command -v "$cmd" >/dev/null; then
-      printf 'Required command not found: %s\n' "$cmd" >&2
-      return 1
-    fi
-  done
-}
-
-# Warn about missing optional utilities that enhance UX
-warn_optional_cmds() {
-  [[ -n ${CHATGPT_SUPPRESS_WARN:-} ]] && return
-  command -v gum >/dev/null || printf 'Optional command not found: gum (for nicer prompts)\n' >&2
-  command -v fzf >/dev/null || printf 'Optional command not found: fzf (for session selection)\n' >&2
-  if ! command -v glow >/dev/null && ! command -v bat >/dev/null; then
-    printf 'Optional command not found: glow or bat (for markdown rendering)\n' >&2
-  fi
-}
 
 # Fetch the last few commands from shell history and format them
 get_shell_context() {

@@ -21,6 +21,6 @@ _arguments -C \
   '--file[include file]:file:_files' \
   '--cmd[include command]:command:_command_names' \
   '--pipe[read from stdin]' \
-  '--markdown[render output via glow or bat]' \
+
   '*:prompt:'
 
