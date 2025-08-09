@@ -23,11 +23,71 @@ Options:
   --file <path>           Include file contents as context
   --cmd <command>         Include command output as context
   --pipe                  Read additional context from STDIN
+EOF
 
+}
+
+# API request ----------------------------------------------------
+
+api_request() {
+  local resp
+  resp=$(curl --silent --no-buffer -X POST "$OPENAI_API_URL" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $OPENAI_API_KEY" \
+    -d @- <<EOF
+{
+  "model": "$OPENAI_MODEL",
   "stream": true,
   "messages": $(cat "$session_file")
 }
 EOF
+  )
+  [[ -n $resp ]] || { echo 'Error contacting OpenAI API' >&2; return 1; }
+  echo "$resp"
+}
+
+# Interactive loop -----------------------------------------------
+
+interactive_loop() {
+  local session_file
+  session_file=$(select_session)
+  local session_name=$(basename "$session_file" .json)
+  echo "Session: $session_name"
+
+  while true; do
+    local user_input
+    if command -v gum >/dev/null; then
+      user_input=$(gum input --prompt="> ")
+    else
+      printf "> "
+      read -r user_input
+    fi
+    [[ -z $user_input ]] && continue
+    handle_message "$user_input" "$session_file"
+  done
+}
+
+# Handle message -------------------------------------------------
+
+handle_message() {
+  local user_msg="$1"
+  local session_file="$2"
+  local session=$(basename "$session_file" .json)
+
+  append_message "user" "$user_msg" "$session_file"
+
+  local buffer
+  local line
+  while read -r line; do
+    local content
+    content=$(echo "$line" | sed -n 's/^data: \(.*\)/\1/p')
+    if [[ -n $content && $content != '[DONE]' ]]; then
+      buffer+=$(echo "$content" | jq -r '.choices[0].delta.content')
+      render_markdown "$buffer" | tr -d '\n'
+      printf "\r"
+    fi
+  done < <(api_request)
+  render_markdown "$buffer"
 
   append_message "assistant" "$buffer" "$session_file"
   log_turn "$session" "$user_msg" "$buffer"
@@ -36,24 +96,83 @@ EOF
 # Image generation -----------------------------------------------
 
 image_request() {
-
+  local prompt="$1"
+  local resp
+  resp=$(curl --silent -X POST "$OPENAI_IMAGE_URL" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $OPENAI_API_KEY" \
+    -d @- <<EOF
 {
   "model": "$OPENAI_IMAGE_MODEL",
   "prompt": "$prompt"
 }
 EOF
-
-  done
+  )
   [[ -n $resp ]] || { echo 'Error contacting OpenAI API' >&2; return 1; }
   echo "$resp" | jq -r '.data[0].url'
 }
 
 
-# Entry -----------------------------------------------------------
+# Main execution -------------------------------------------------
 
-if [[ -n $prompt || $from_pipe || -n $file || -n $cmd ]]; then
-  handle_message "$prompt"
-else
-  interactive_loop
-fi
+check_deps() {
+  local missing=false
+  for cmd in curl jq; do
+    if ! command -v "$cmd" >/dev/null; then
+      echo "Error: '$cmd' is not installed." >&2
+      missing=true
+    fi
+  done
+  $missing && exit 1
+}
+
+main() {
+  check_deps
+  ensure_dirs
+  local session_file="$CHATGPT_SESSION_DIR/$CHATGPT_DEFAULT_SESSION.json"
+  local prompt
+  local model="$OPENAI_MODEL"
+  local image=false
+  local clear_session=false
+  local list_sessions=false
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -m|--model) model="$2"; shift 2;;
+      --session) session_file="$CHATGPT_SESSION_DIR/$2.json"; shift 2;;
+      --new-session) session_file="$CHATGPT_SESSION_DIR/$2.json"; [[ ! -f "$session_file" ]] && echo '[]' > "$session_file"; shift 2;;
+      --list) list_sessions=true; shift;;
+      --clear) clear_session=true; shift;;
+      --image) image=true; shift;;
+      --file) prompt+="\n\n$(<"$2")"; shift 2;;
+      --cmd) prompt+="\n\n$(eval "$2")"; shift 2;;
+      --pipe) prompt+="\n\n$(</dev/stdin)"; shift;;
+      -*) usage; exit 1;;
+      *) prompt+="$1"; shift;;
+    esac
+  done
+
+  if $list_sessions; then
+    ls -1 "$CHATGPT_SESSION_DIR" | sed 's/\.json$//'
+    exit 0
+  fi
+
+  if $clear_session; then
+    echo '[]' > "$session_file"
+    exit 0
+  fi
+
+  if $image; then
+    image_request "$prompt"
+    exit 0
+  fi
+
+  if [[ -n $prompt ]]; then
+    handle_message "$prompt" "$session_file"
+  else
+    interactive_loop
+  fi
+}
+
+main "$@"
 

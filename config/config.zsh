@@ -31,3 +31,7 @@ get_api_key
 # Number of previous shell commands to include as context
 : ${CHAT_SHELL_HISTORY_LINES:=20}
 
+# Source user-specific config if it exists
+if [[ -f "$HOME/.config/zsh-chatgpt/config.zsh" ]]; then
+  source "$HOME/.config/zsh-chatgpt/config.zsh"
+fi
