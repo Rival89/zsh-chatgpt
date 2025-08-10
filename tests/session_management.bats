@@ -23,8 +23,8 @@ setup() {
 
 @test "clears session" {
   echo '[{"role":"user","content":"hi"}]' > "$CHATGPT_SESSION_DIR/clear.json"
-  run ./bin/chatgpt --session clear --clear
-  [ "$status" -eq 0 ]
-  [ ! -s "$CHATGPT_SESSION_DIR/clear.json" ]
+run ./bin/chatgpt --session clear --clear
+[ "$status" -eq 0 ]
+[ "$(cat "$CHATGPT_SESSION_DIR/clear.json")" = '[]' ]
 }
 

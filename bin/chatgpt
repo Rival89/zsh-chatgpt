@@ -123,7 +123,9 @@ check_deps() {
       missing=true
     fi
   done
-  $missing && exit 1
+  if [ "$missing" = true ]; then
+    exit 1
+  fi
 }
 
 main() {
